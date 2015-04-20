@@ -13,7 +13,7 @@
 #
 # make sure latest version is always installed
 # class {'varnish::install':
-#  version => latest,
+#  package_version => latest,
 # }
 #
 
@@ -21,6 +21,7 @@ class varnish::install (
   $add_repo = true,
   $manage_firewall = false,
   $varnish_listen_port = '6081',
+  $package_version = latest
 ) {
   class { 'varnish::repo':
     enable => $add_repo,
@@ -28,12 +29,12 @@ class varnish::install (
   }
 
   class { 'varnish::firewall':
-	  manage_firewall     => $manage_firewall,
-	  varnish_listen_port => $varnish_listen_port,
+    manage_firewall     => $manage_firewall,
+    varnish_listen_port => $varnish_listen_port,
   }
 
   # varnish package
   package { 'varnish':
-    ensure  => $varnish::version,
+    ensure  => $package_version,
   }
 }

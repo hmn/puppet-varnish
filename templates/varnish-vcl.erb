@@ -1,7 +1,9 @@
 # NOTE: this file is managed by puppet
 #
+vcl 4.0;
 
 import std;
+import directors;
 
 #Import file with probe definitions
 include "includes/probes.vcl";
@@ -9,57 +11,53 @@ include "includes/probes.vcl";
 #Import file with backend definitions
 include "includes/backends.vcl";
 
-#Import file with director definitions;
-include "includes/directors.vcl";
-
 #Import file with acl definitions
 include "includes/acls.vcl";
 
+sub vcl_init {
+  include "includes/directors.vcl";
+}
+
 sub vcl_recv {
+  # custom recv tags
+  include "includes/recv.vcl";
+
+  # backend selection logic
+  include "includes/backendselection.vcl";
 
 <%- if @defaultgrace -%>
   # Default grace period
   set req.grace = <%= @defaultgrace %>;
 <%- end -%>
-<%- if @logrealip -%> 
+<%- if @logrealip -%>
   if (req.http.X-Forwarded-For) {
-     std.log("RealIP:" + req.http.X-Forwarded-For); 
+     std.log("RealIP:" + req.http.X-Forwarded-For);
   } else {
-     std.log("RealIP:" + client.ip); 
+     std.log("RealIP:" + client.ip);
   }
 <%- end -%>
 
-  unset req.http.If-Modified-Since;
-  unset req.http.If-None-Match; 
-
-  # cookie sanitization
-  if (req.http.Cookie) {
-
-     set req.http.Cookie = ";"+req.http.Cookie;
-     set req.http.Cookie = regsuball(req.http.Cookie, "; +", ";");
-     set req.http.Cookie = regsuball(req.http.Cookie, ";(<%- @cookiekeeps.each do |cookie| -%><%= cookie %><%- if cookie != @cookiekeeps[-1] -%>|<%-end-%><%-end-%>)=", "; \1=");
-     set req.http.Cookie = regsuball(req.http.Cookie, ";[^ ][^;]*", "");
-     set req.http.Cookie = regsuball(req.http.Cookie, "^[; ]+|[; ]+$", "");
-    if (req.http.Cookie == "") {
-      remove req.http.Cookie;
-    }
+  # Large static files are delivered directly to the end-user without
+  # waiting for Varnish to fully read the file first.
+  # Varnish 4 fully supports Streaming, so set do_stream in vcl_backend_response()
+  if (req.url ~ "^[^?]*\.(mp[34]|rar|tar|tgz|gz|wav|zip|bz2|xz|7z|avi|mov|ogm|mpe?g|mk[av])(\?.*)?$") {
+    unset req.http.Cookie;
+    return (hash);
   }
 
-  if (
-     # Static file cache
-     ((req.url ~ "(?i)\.(jpg|jpeg|gif|png|tiff|tif|svg|swf|ico|css|kss|js|vsd|doc|ppt|pps|xls|pdf|mp3|mp4|m4a|ogg|mov|avi|wmv|sxw|zip|gz|bz2|tar|rar|odc|odb|odf|odg|odi|odp|ods|odt|sxc|sxd|sxi|sxw|dmg|torrent|deb|msi|iso|rpm|jar|class|flv|exe)$")||
-     # Plone images cache
-     (req.url ~ "(?i)(image|imagem_large|image_preview|image_mini|image_thumb|image_tile|image_icon|imagem_listing)$")) && 
-     # Plone resource editor
-     (req.url !~ "(?i)\@\@plone\.resourceeditor\.getfile\?path\=")
-     ) {
-     remove req.http.Cookie;
+  # Remove all cookies for static files
+  # A valid discussion could be held on this line: do you really need to cache static files that don't cause load? Only if you have memory left.
+  # Sure, there's disk I/O, but chances are your OS will already have these files in their buffers (thus memory).
+  # Before you blindly enable this, have a read here: https://ma.ttias.be/stop-caching-static-files/
+  if (req.url ~ "^[^?]*\.(bmp|bz2|css|doc|eot|flv|gif|gz|ico|jpeg|jpg|js|less|pdf|png|rtf|swf|txt|woff|xml)(\?.*)?$") {
+    unset req.http.Cookie;
+    return (hash);
   }
 
-  <%- if @blockedips.length > 0 -%>
   # blocked list
+  <%- if @blockedbots.length > 0 -%>
   if ((client.ip ~ blockedips)<%- if @blockedbots.length > 0 -%>||(req.http.User-Agent ~ "(?i)<%- @blockedbots.each do |bot| -%><%= bot %><%- if cookie != @blockedbots[-1] -%>|<%-end-%><%-end-%>")<%-end-%>) {
-      error 403 "Access forbidden.";
+      return (synth(403, "Access forbidden."));
   }
   <%- end -%>
 
@@ -68,164 +66,216 @@ sub vcl_recv {
   # These rules are defined by a number between semicolons. Example: ;48;
   # All expections must be defined at the req.http.EXCE variable
   # DO NOT MODIFY waf.vcl FILE!
-  
+
   set req.http.EXCE = ";<%- @wafexceptions.each do |exce| -%><%= exce %>;<%-end-%>";
   set req.http.RULE = "";
 
-  include "includes/waf.vcl";
+  #include "includes/waf.vcl";
   if (!(req.http.RULE == "")) {
     std.log( "ATTACK SIGNATURE rules:"+req.http.RULE+" url:"+req.url+" COOKIE:"+req.http.Cookie+"   IP:"+client.ip);
-    error 403 "ATTACK DETECTED - IP LOGGED";
+    return (synth(403, "ATTACK DETECTED - IP LOGGED"));
   }
-  remove req.http.EXCE;
-  remove req.http.RULE;
+  unset req.http.EXCE;
+  unset req.http.RULE;
   <%- end -%>
 
-  # backend selection logic
-  include "includes/backendselection.vcl";
+  # Normalize the query arguments
+  set req.url = std.querysort(req.url);
 
-  <%- if @purgeips.length > 0 -%>
-  # Allows purge for the IPs in purge ACL
-  if (req.request == "PURGE") {
-    if (!(client.ip ~ purge)) {
-        error 405 "Not allowed.";
+  # Allow purging
+  if (req.method == "PURGE") {
+    if (!client.ip ~ purge) { # purge is the ACL defined at the begining
+      # Not from an allowed IP? Then die with an error.
+      return (synth(405, "This IP is not allowed to send PURGE requests."));
     }
-    ban(" req.url == " + req.url);
-    set req.url = regsuball(req.url,"80","443"); 
-    set req.url = regsuball(req.url,"http","https");
-    ban(" req.url == " + req.url);
-    # Throw a synthetic page so the
-    # request won't go to the backend.
-    error 200 "Added ban.";      
-  }
-  <%- end -%>
-
-  if (req.request != "GET" &&
-      req.request != "HEAD" &&
-      req.request != "PUT" &&
-      req.request != "POST" &&
-      req.request != "TRACE" &&
-      req.request != "OPTIONS" &&
-      req.request != "DELETE") {
-     /* Non-RFC2616 or CONNECT which is weird. */
-     return (pipe);
+    # If you got this stage (and didn't error out above), purge the cached result
+    return (purge);
   }
 
+  # Only deal with "normal" types
+  if (req.method != "GET" &&
+      req.method != "HEAD" &&
+      req.method != "PUT" &&
+      req.method != "POST" &&
+      req.method != "TRACE" &&
+      req.method != "OPTIONS" &&
+      req.method != "PATCH" &&
+      req.method != "DELETE") {
+    /* Non-RFC2616 or CONNECT which is weird. */
+    return (pipe);
+  }
 
+  # Implementing websocket support (https://www.varnish-cache.org/docs/4.0/users-guide/vcl-example-websockets.html)
+  if (req.http.Upgrade ~ "(?i)websocket") {
+    return (pipe);
+  }
+
+  # Only cache GET or HEAD requests. This makes sure the POST requests are always passed.
+  if (req.method != "GET" && req.method != "HEAD") {
+    return (pass);
+  }
 }
 
-sub vcl_hash {
+sub vcl_purge {
+  # Only handle actual PURGE HTTP methods, everything else is discarded
+  if (req.method != "PURGE") {
+    # restart request
+    set req.http.X-Purge = "Yes";
+    return(restart);
+  }
 }
-
 
 sub vcl_pipe {
-  set req.http.Connection = "close";  
+# Called upon entering pipe mode. In this mode, the request is passed on to the backend, and any further data from both the client and backend is passed on unaltered until either end closes the connection. Basically, Varnish will degrade into a simple TCP proxy, shuffling bytes back and forth. For a connection in pipe mode, no other VCL subroutine will ever get called after vcl_pipe.
+
+  # Note that only the first request to the backend will have
+  # X-Forwarded-For set.  If you use X-Forwarded-For and want to
+  # have it set for all requests, make sure to have:
+  # set bereq.http.connection = "close";
+  # here.  It is not set by default as it might break some broken web
+  # applications, like IIS with NTLM authentication.
+
+  set bereq.http.Connection = "Close";
+
+  # Implementing websocket support (https://www.varnish-cache.org/docs/4.0/users-guide/vcl-example-websockets.html)
+  if (req.http.upgrade) {
+    set bereq.http.upgrade = req.http.upgrade;
+  }
+
   return (pipe);
-}
-
-sub vcl_hit {
-   std.log( "CACHE-DEBUG URL:"+req.url+" COOKIE:"+req.http.Cookie+" AVISO:HIT IP:"+client.ip);
-   if (req.request == "PURGE") {
-      purge;
-      error 200 "Purged.";
-   }
-}
-
-sub vcl_miss {
-    std.log( "CACHE-DEBUG URL:"+req.url+" COOKIE:"+req.http.Cookie+" AVISO:MISS IP:"+client.ip);
-    if (req.request == "PURGE") {
-       purge;
-       error 200 "Purged.";
-    }
 }
 
 sub vcl_pass {
    std.log( "CACHE-DEBUG URL:"+req.url+" COOKIE:"+req.http.Cookie+" AVISO:PASS IP:"+client.ip);
 }
 
-sub vcl_fetch {
+sub vcl_backend_response {
 
 <%- if @defaultgrace -%>
   # Default grace period
   set req.grace = <%= @defaultgrace %>;
 <%- end -%>
-  
+
   if (beresp.http.content-type ~ "<%- @gziptypes.each do |type| -%>^<%= type %><%- if type != @gziptypes[-1] -%>|<%-end-%><%-end-%>") {
      set beresp.do_gzip = true;
   }
- 
-  # Remove I18N_LANGUAGE Set-Cookie 
-  if (beresp.http.Set-Cookie ~ "I18N_LANGUAGE") {
-    remove beresp.http.Set-Cookie;
+
+  # Large static files are delivered directly to the end-user without
+  # waiting for Varnish to fully read the file first.
+  # Varnish 4 fully supports Streaming, so use streaming here to avoid locking.
+  if (bereq.url ~ "^[^?]*\.(mp[34]|rar|tar|tgz|gz|wav|zip|bz2|xz|7z|avi|mov|ogm|mpe?g|mk[av])(\?.*)?$") {
+    unset beresp.http.set-cookie;
+    set beresp.do_stream = true;  # Check memory usage it'll grow in fetch_chunksize blocks (128k by default) if
+    # the backend doesn't send a Content-Length header, so only enable it for big objects
+    set beresp.do_gzip = false; # Don't try to compress it for storage
   }
 
-  # Default minimum cache period 
-  if(!(req.http.Cookie)&&!(beresp.http.Set-Cookie)&&(req.request == "GET")) {
-     set beresp.ttl = <%= @min_cache_time %>;
-  }
-
-  if ( 
-     # Static file cache
-     (req.url ~ "(?i)\.(jpg|jpeg|gif|png|tiff|tif|svg|swf|ico|css|kss|js|vsd|doc|ppt|pps|xls|pdf|mp3|mp4|m4a|ogg|mov|avi|wmv|sxw|zip|gz|bz2|tar|rar|odc|odb|odf|odg|odi|odp|ods|odt|sxc|sxd|sxi|sxw|dmg|torrent|deb|msi|iso|rpm|jar|class|flv|exe)$")||
-     # Plone images cache
-     (req.url ~ "(?i)(image|imagem_large|image_preview|image_mini|image_thumb|image_tile|image_icon|imagem_listing)$")
-  ) {
+  # Enable cache for all static files
+  # The same argument as the static caches from above: monitor your cache size, if you get data nuked out of it, consider giving up the static file cache.
+  # Before you blindly enable this, have a read here: https://ma.ttias.be/stop-caching-static-files/
+  if (bereq.url ~ "^[^?]*\.(bmp|bz2|css|doc|eot|flv|gif|gz|ico|jpeg|jpg|js|less|mp[34]|pdf|png|rar|rtf|swf|tar|tgz|txt|wav|woff|xml|zip)(\?.*)?$") {
     set beresp.ttl = <%= @static_cache_time %>;
-    remove beresp.http.Set-Cookie;
+    unset beresp.http.set-cookie;
   }
 
   #Avoid cache of objects > 100M
-  if ( beresp.http.Content-Length ~ "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]" ) { 
-    set beresp.ttl = <%= @static_cache_time %>; 
-    return (hit_for_pass);
-  } 
- 
+  if ( beresp.http.Content-Length ~ "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]" ) {
+    set beresp.ttl = <%= @static_cache_time %>;
+    set beresp.uncacheable = true;
+    return (deliver);
+  }
+
+  // force cache?
+  elsif (beresp.http.host ~ "^cache.") {
+      set beresp.http.X-Cacheable = "YES:cache url";
+      unset beresp.http.set-cookie;
+  }
+
+  // Varnish determined the object was not cacheable
+  elsif (beresp.ttl <= 0s) {
+      set beresp.http.X-Cacheable = "NO:Not Cacheable";
+      set beresp.uncacheable = true;
+      return (deliver);
+  }
+
+  // cookie set
+  elsif ( beresp.http.Set-Cookie) {
+      set beresp.http.X-Cacheable = "NO:Set-Cookie";
+      set beresp.uncacheable = true;
+      return (deliver);
+  }
+
+  // You are respecting the Cache-Control=private header from the backend
+  elsif( beresp.http.Pragma ~ "no-cache" ||
+      beresp.http.Cache-Control ~ "no-cache" ||
+      beresp.http.Cache-Control ~ "private")
+  {
+      set beresp.http.X-Cacheable = "NO:Cache-Control=private";
+      set beresp.uncacheable = true;
+      return (deliver);
+  }
+
+  // You are extending the lifetime of the object artificially
+  elsif ( beresp.ttl < 1s ) {
+    set beresp.ttl   = 30s;
+    set beresp.grace = 30s;
+    set beresp.http.X-Cacheable = "YES:Forced";
+  }
+
+  // Varnish determined the object was cacheable
+  else {
+    set beresp.http.X-Cacheable = "YES";
+  }
+
+  return(deliver);
 }
 
 sub vcl_deliver {
-     if (obj.hits > 0) {
-         set resp.http.X-Cache = "HIT";
-     } else {
-         set resp.http.X-Cache = "MISS";
-     }
+  if (obj.hits > 0) { # Add debug header to see if it's a HIT/MISS and the number of hits, disable when not needed
+    set resp.http.X-Cache = "HIT";
+  } else {
+    set resp.http.X-Cache = "MISS";
+  }
+  # Please note that obj.hits behaviour changed in 4.0, now it counts per objecthead, not per object
+  # and obj.hits may not be reset in some cases where bans are in use. See bug 1492 for details.
+  # So take hits with a grain of salt
+  set resp.http.X-Cache-Hits = obj.hits;
+
+  # Remove some headers: PHP version
+  unset resp.http.X-Powered-By;
+
+  # Remove some headers: Apache version & OS
+  unset resp.http.Server;
+  unset resp.http.X-Drupal-Cache;
+  unset resp.http.X-Varnish;
+  unset resp.http.Via;
+  unset resp.http.Link;
+  unset resp.http.X-Generator;
+
+  return (deliver);
 }
 
-sub vcl_error {
-     
-     ## Moved Permanently
-     if (obj.status == 750) {
-        set obj.http.Location = obj.response;
-        set obj.status = 301;
-        return(deliver);
-     }
+# The data on which the hashing will take place
+sub vcl_hash {
+# Called after vcl_recv to create a hash value for the request. This is used as a key to look up the object in Varnish.
 
-     set obj.http.Content-Type = "text/html; charset=utf-8";
-     set obj.http.Retry-After = "5";
-     synthetic {"
- <?xml version="1.0" encoding="utf-8"?>
- <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
-  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
- <html>
-   <head>
-     <title>"} + obj.status + " " + obj.response + {"</title>
-   </head>
-   <body>
-     <h1>Error "} + obj.status + " " + obj.response + {"</h1>
-     <p>"} + obj.response + {"</p>
-     <h3>Guru Meditation:</h3>
-     <p>XID: "} + req.xid + {"</p>
-     <hr>
-    <p>Varnish cache server</p>
-   </body>
- </html>
- "};
-     return (deliver);
+  hash_data(req.url);
+
+  if (req.http.host) {
+    hash_data(req.http.host);
+  } else {
+    hash_data(server.ip);
+  }
+
+  # hash cookies for requests that have them
+  if (req.http.Cookie) {
+    hash_data(req.http.Cookie);
+  }
 }
-# 
-# sub vcl_init {
-# 	return (ok);
-# }
-# 
-# sub vcl_fini {
-# 	return (ok);
-# }
+
+sub vcl_synth {
+    set resp.http.Content-Type = "text/html; charset=utf-8";
+    set resp.http.Retry-After = "5";
+    synthetic ("Error");
+    return (deliver);
+}

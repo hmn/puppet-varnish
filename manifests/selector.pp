@@ -1,10 +1,11 @@
 #selector.pp
 define varnish::selector(
-  $director = $name,
-  $condition,
+  $director = $title,
+  $condition = undef,
   $rewrite = undef,
   $newurl = undef,
   $movedto = undef,
+  $return = undef,
 ) {
 
   concat::fragment { "${title}-selector":

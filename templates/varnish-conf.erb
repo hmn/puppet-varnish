@@ -57,7 +57,7 @@ VARNISH_STORAGE_SIZE=<%= scope.lookupvar('varnish_storage_size') %>
 #
 # # File containing administration secret
 VARNISH_SECRET_FILE=<%= scope.lookupvar('varnish_secret_file') %>
-# 
+#
 # # Backend storage specification
 <% if scope.lookupvar('storage_type') == 'malloc' %>
 VARNISH_STORAGE="<%= scope.lookupvar('storage_type') %>,${VARNISH_STORAGE_SIZE}"
@@ -77,12 +77,12 @@ DAEMON_OPTS="-a ${VARNISH_LISTEN_ADDRESS}:${VARNISH_LISTEN_PORT} \
              -t ${VARNISH_TTL} \
              -S ${VARNISH_SECRET_FILE} \
              -s ${VARNISH_STORAGE} \
-<% if scope.lookupvar('varnish::params::version') == 4 -%>
+<%- if scope.lookupvar('varnish::version') == '4' -%>
              -p thread_pool_min=${VARNISH_MIN_THREADS} \
              -p thread_pool_max=${VARNISH_MAX_THREADS} \
              -p thread_pool_timeout=${VARNISH_THREAD_TIMEOUT}"
-<% else -%>
+<%- else -%>
              -w ${VARNISH_MIN_THREADS},${VARNISH_MAX_THREADS},${VARNISH_THREAD_TIMEOUT}"
-<% end %>
+<%- end -%>
 
-
+# version : [<%= scope.lookupvar('varnish::version') %>]

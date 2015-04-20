@@ -20,7 +20,7 @@ class varnish::repo (
   $repo_version = $varnish::version ? {
     /^3\./  => '3.0',
     /^4\./  => '4.0',
-    default => '3.0',
+    default => '4.0',
   }
 
   $repo_arch = $::architecture
@@ -40,18 +40,18 @@ class varnish::repo (
     case $::osfamily {
       redhat: {
         yumrepo { 'varnish':
-          descr          => 'varnish',
-          enabled        => '1',
-          gpgcheck       => '0',
-          priority       => '1',
-          baseurl        => "${repo_base_url}/${repo_distro}/varnish-${repo_version}/el${osver}/${repo_arch}",
+          descr    => 'varnish',
+          enabled  => '1',
+          gpgcheck => '0',
+          priority => '1',
+          baseurl  => "${repo_base_url}/${repo_distro}/varnish-${repo_version}/el${osver}/${repo_arch}",
         }
       }
       debian: {
         apt::source { 'varnish':
           location   => "${repo_base_url}/${repo_distro}",
           repos      => "varnish-${repo_version}",
-          key        => 'C4DEFFEB',
+          key        => 'E98C6BBBA1CBC5C3EB2DF21C60E7C096C4DEFFEB',
           key_source => 'http://repo.varnish-cache.org/debian/GPG-key.txt',
         }
       }

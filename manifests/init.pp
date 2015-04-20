@@ -61,9 +61,9 @@ class varnish (
   $varnish_storage_file         = '/var/lib/varnish-storage/varnish_storage.bin',
   $varnish_ttl                  = '120',
   $shmlog_dir                   = '/var/lib/varnish',
-  $shmlog_tempfs                = true,
-  $version                      = present,
-  $default_version              = 3,
+  $shmlog_tempfs                = false,
+  $package_version              = latest,
+  $version                      = 4,
   $add_repo                     = true,
   $manage_firewall              = false,
 ) {
@@ -76,6 +76,7 @@ class varnish (
     add_repo            => $add_repo,
     manage_firewall     => $manage_firewall,
     varnish_listen_port => $varnish_listen_port,
+    package_version     => latest
   }
 
   # enable Varnish service
@@ -109,5 +110,6 @@ class varnish (
     ensure  => directory,
     path    => $varnish_storage_dir,
     require => Package['varnish'],
+    notify  => Exec['restart-varnish'],
   }
 }

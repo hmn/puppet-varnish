@@ -49,28 +49,6 @@ class varnish::vcl (
   $template          = undef,
   $logrealip         = false,
 ) {
-
-  include varnish
-
-  # define include file type
-  define includefile {
-    $selectors = $varnish::vcl::selectors
-    concat { "${varnish::vcl::includedir}/${title}.vcl":
-      owner   => 'root',
-      group   => 'root',
-      mode    => '0444',
-      notify  => Service['varnish'],
-      require => File[$varnish::vcl::includedir],
-    }
-
-    concat::fragment { "${title}-header":
-      target  => "${varnish::vcl::includedir}/${title}.vcl",
-      content => "# File managed by Puppet\n",
-      order   => '01',
-    }
-  }
-
-
   # select template to use
   if $template {
     $template_vcl = $template
@@ -96,14 +74,19 @@ class varnish::vcl (
       ensure  => directory,
       require => Package['varnish'],
     }
-    $includefiles = ['probes', 'backends', 'directors', 'acls', 'backendselection', 'waf']
+    $includefiles = ['probes', 'backends', 'directors', 'acls', 'backendselection', 'recv']
     includefile { $includefiles: }
 
-    # web application firewall
-    concat::fragment { 'waf':
-      target  => "${varnish::vcl::includedir}/waf.vcl",
+    # # web application firewall
+    #concat::fragment { 'waf-content':
+    #  target  => "${includedir}/waf.vcl",
+    #  content => template('varnish/includes/waf.vcl.erb'),
+    #  order   => '02',
+    #}
+
+    file { "${varnish::vcl::includedir}/waf.vcl":
+      ensure  => file,
       content => template('varnish/includes/waf.vcl.erb'),
-      order   => '02',
     }
 
     #Create resources
@@ -132,5 +115,24 @@ class varnish::vcl (
     }
     $all_acls = merge($default_acls, $acls)
     create_resources(varnish::acl,$all_acls)
+  }
+}
+
+# define include file type
+define includefile {
+  $selectors = $varnish::vcl::selectors
+  concat { "${varnish::vcl::includedir}/${title}.vcl":
+    ensure  => present,
+    owner   => 'root',
+    group   => 'root',
+    mode    => '0444',
+    notify  => Service['varnish'],
+    require => File[$varnish::vcl::includedir],
+  }
+
+  concat::fragment { "${title}-header":
+    target  => "${varnish::vcl::includedir}/${title}.vcl",
+    content => "# File managed by Puppet\n",
+    order   => '01',
   }
 }

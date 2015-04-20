@@ -1,13 +1,17 @@
 if (<%= @condition -%>) {
-    <%- if @movedto -%>
-  error 750 "<%= @movedto -%>" + req.url;  
-    <%- else -%>
-  set req.backend = <%= @director -%>;
-      <%- if @rewrite -%>
+<%- if @movedto -%>
+  return (synth(750, "<%= @movedto -%>" + req.url));
+<%- else -%>
+  set req.backend_hint = <%= @director -%>;
+  <%- if @rewrite -%>
   set req.http.x-host = <%= @rewrite -%>;
-      <%- end -%>
-      <%- if @newurl -%>
+  <%- end -%>
+  <%- if @newurl -%>
   set req.url = <%= @newurl -%>;
-      <%- end -%>
-    <%- end -%>
+  <%- end -%>
+  <%- if @return -%>
+  return (<%= @return -%>);
+  <%- end -%>
+<%- end -%>
+
 }

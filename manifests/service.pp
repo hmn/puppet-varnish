@@ -40,7 +40,7 @@ class varnish::service (
   service {'varnish':
     ensure  => $service_state,
     restart => $reload_cmd,
-    require => Package['varnish'],
+    require => [ Package['varnish'], File['varnish-vcl'] ],
   }
 
   $restart_command = $::osfamily ? {
@@ -50,7 +50,7 @@ class varnish::service (
   }
 
   exec {'restart-varnish':
-    command => $restart_command,
+    command     => $restart_command,
     refreshonly => true,
   }
 

@@ -1,3 +1,4 @@
+# Enable ncsa service
 class varnish::ncsa (
   $enable = true,
   $varnishncsa_daemon_opts = undef,
