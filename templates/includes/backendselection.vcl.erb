@@ -1,3 +1,4 @@
+# <%= @title %>
 if (<%= @condition -%>) {
 <%- if @movedto -%>
   return (synth(750, "<%= @movedto -%>" + req.url));
@@ -13,5 +14,4 @@ if (<%= @condition -%>) {
   return (<%= @return -%>);
   <%- end -%>
 <%- end -%>
-
 }
