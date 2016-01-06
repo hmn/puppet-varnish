@@ -51,8 +51,14 @@ class varnish::repo (
         apt::source { 'varnish':
           location   => "${repo_base_url}/${repo_distro}",
           repos      => "varnish-${repo_version}",
-          key        => 'E98C6BBBA1CBC5C3EB2DF21C60E7C096C4DEFFEB',
-          key_source => 'http://repo.varnish-cache.org/debian/GPG-key.txt',
+          key      => {
+              'id'     => 'E98C6BBBA1CBC5C3EB2DF21C60E7C096C4DEFFEB',
+              'server' => 'keyserver.ubuntu.com',
+              'source' => 'http://repo.varnish-cache.org/debian/GPG-key.txt'
+          },
+          include  => {
+              'src' => true
+          }
         }
       }
       default: {
