@@ -44,7 +44,7 @@ class varnish::service (
   }
 
   $restart_command = $::osfamily ? {
-    'debian'    => '/etc/init.d/varnish restart',
+    'debian'    => '/etc/init.d/varnish stop && /etc/init.d/varnish start',
     'redhat'    => '/sbin/service varnish restart',
     default     => undef,
   }
